@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Eurostat Indexation Tool</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="logo">EI</div>
+      <div>
+        <h1>Eurostat Indexation Tool</h1>
+        <p class="subtitle">Live price-index data &middot; Indexation &middot; Supplier verification</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span class="status-pill" id="connStatus">Idle</span>
+      <span class="last-refresh">Last refresh: <span id="lastRefresh">—</span></span>
+      <label class="auto-refresh">
+        <input type="checkbox" id="autoRefresh" />
+        Auto-refresh (24h)
+      </label>
+      <button class="btn btn-primary" id="refreshBtn">Refresh data</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="calculator">Indexation Calculator</button>
+    <button class="tab" data-tab="supplier">Supplier Verification</button>
+    <button class="tab" data-tab="export">Export</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <!-- DASHBOARD -->
+    <section class="tab-panel active" id="tab-dashboard">
+      <div class="panel-head">
+        <h2>Live Index View</h2>
+        <p>Latest and historical values for each tracked Eurostat dataset.</p>
+      </div>
+
+      <div class="cards" id="indexCards"></div>
+
+      <div class="card wide">
+        <div class="card-head">
+          <h3>Index history</h3>
+          <select id="historySelect"></select>
+        </div>
+        <div class="table-wrap">
+          <table id="historyTable">
+            <thead>
+              <tr><th>Period</th><th>Value</th><th>MoM</th><th>YoY</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- CALCULATOR -->
+    <section class="tab-panel" id="tab-calculator">
+      <div class="panel-head">
+        <h2>Indexation Calculator</h2>
+        <p>Formula: <code>Price_new = Price_base × (Index_target / Index_base)</code></p>
+      </div>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table id="calcTable">
+            <thead>
+              <tr>
+                <th>Description</th>
+                <th>Base price</th>
+                <th>Base date (YYYY-MM)</th>
+                <th>Index</th>
+                <th>Target date (YYYY-MM)</th>
+                <th>Index base</th>
+                <th>Index target</th>
+                <th>Indexed price</th>
+                <th>Δ abs</th>
+                <th>Δ %</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="card-actions">
+          <button class="btn" id="addCalcRow">+ Add line</button>
+          <button class="btn btn-primary" id="recalcBtn">Recalculate</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- SUPPLIER -->
+    <section class="tab-panel" id="tab-supplier">
+      <div class="panel-head">
+        <h2>Supplier Price Verification</h2>
+        <p>Compare supplier price changes against index-implied changes. Configurable deviation threshold.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Configuration</h3>
+        </div>
+        <div class="form-grid">
+          <label>
+            Index
+            <select id="supIndex"></select>
+          </label>
+          <label>
+            Base date (YYYY-MM)
+            <input type="text" id="supBaseDate" placeholder="2023-01" />
+          </label>
+          <label>
+            Target date (YYYY-MM)
+            <input type="text" id="supTargetDate" placeholder="2024-01" />
+          </label>
+          <label>
+            Deviation threshold %
+            <input type="number" id="supThreshold" value="2" step="0.1" />
+          </label>
+        </div>
+        <div class="card-actions">
+          <label class="btn">
+            Upload CSV
+            <input type="file" id="csvInput" accept=".csv" hidden />
+          </label>
+          <button class="btn" id="addSupplierRow">+ Add row</button>
+          <button class="btn btn-primary" id="evalSuppliers">Evaluate</button>
+        </div>
+        <p class="hint">CSV columns: <code>supplier,product,base_price,new_price</code></p>
+      </div>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table id="supplierTable">
+            <thead>
+              <tr>
+                <th>Supplier</th>
+                <th>Product</th>
+                <th>Base price</th>
+                <th>New price</th>
+                <th>Supplier Δ%</th>
+                <th>Index Δ%</th>
+                <th>Deviation pp</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- EXPORT -->
+    <section class="tab-panel" id="tab-export">
+      <div class="panel-head">
+        <h2>Export Results</h2>
+        <p>Export raw index data, indexation calculations, and supplier verification into a single Excel workbook.</p>
+      </div>
+      <div class="card">
+        <div class="card-actions">
+          <button class="btn btn-primary" id="exportXlsx">Export to Excel (.xlsx)</button>
+          <button class="btn" id="exportPdf">Export to PDF</button>
+        </div>
+        <ul class="export-list">
+          <li>Sheet 1 — Raw index data (all tracked indexes)</li>
+          <li>Sheet 2 — Indexation calculations</li>
+          <li>Sheet 3 — Supplier verification summary</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="tab-panel" id="tab-settings">
+      <div class="panel-head">
+        <h2>Tracked Datasets</h2>
+        <p>Add or remove Eurostat dataset codes. Defaults: HICP, PPI, Energy prices.</p>
+      </div>
+
+      <div class="card">
+        <div class="table-wrap">
+          <table id="datasetTable">
+            <thead>
+              <tr>
+                <th>Label</th>
+                <th>Dataset code</th>
+                <th>Query parameters</th>
+                <th>Period type</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="card-actions">
+          <button class="btn" id="addDataset">+ Add dataset</button>
+          <button class="btn btn-primary" id="saveDatasets">Save &amp; refresh</button>
+        </div>
+        <p class="hint">
+          Period type: <code>M</code> for monthly (HICP/PPI), <code>A</code> annual, <code>S</code> semester (e.g. nrg_pc_202).
+          Parameters are appended to the data query — see
+          <a href="https://wikis.ec.europa.eu/display/EUROSTATHELP/API+-+Getting+started" target="_blank" rel="noopener">Eurostat API docs</a>.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
