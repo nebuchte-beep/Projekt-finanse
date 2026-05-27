@@ -151,28 +151,28 @@ const CONTRACT_PRESETS = [
     id: "lci_total",
     label: "Labour cost – Total (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", unit: "I20", lcstruct: "D1_D4_MD5", nace_r2: "B-S", geo: "EA20" },
+    params: { s_adj: "NSA", unit: "I20", lcstruct: "D1", nace_r2: "B-S", geo: "EA20" },
     period: "Q",
   },
   {
     id: "construction_residential",
-    label: "Construction – Producer prices, residential (CC1)",
+    label: "Construction – Producer prices (NACE F)",
     code: "sts_copi_q",
-    params: { s_adj: "NSA", unit: "I15", indic_bt: "PRC_PRR", cc: "CC1", geo: "EA20" },
+    params: { s_adj: "NSA", unit: "I15", indic_bt: "PRC_PRR", nace_r2: "F", geo: "EA20" },
     period: "Q",
   },
   {
     id: "service_ppi_overall",
-    label: "Service producer prices – All (H-N)",
+    label: "Service producer prices – Transport (H49)",
     code: "sts_sepp_q",
-    params: { s_adj: "NSA", unit: "I15", nace_r2: "H-N_STS", geo: "EA20" },
+    params: { s_adj: "NSA", unit: "I15", nace_r2: "H49", geo: "EA20" },
     period: "Q",
   },
   {
     id: "industrial_production",
     label: "Industrial production index (B-E36)",
     code: "sts_inpr_m",
-    params: { s_adj: "NSA", unit: "I21", nace_r2: "B-E36", indic_bt: "PROD", geo: "EA20" },
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "B-E36", indic_bt: "PROD", geo: "EU27_2020" },
     period: "M",
   },
 ];
@@ -237,16 +237,16 @@ const RAILWAY_PRESETS = [
   },
   {
     id: "construction_cost",
-    label: "Construction – Producer prices, civil engineering",
+    label: "Construction – Producer prices (NACE F)",
     code: "sts_copi_q",
-    params: { s_adj: "NSA", unit: "I15", indic_bt: "PRC_PRR", cc: "CC2", geo: "EA20" },
+    params: { s_adj: "NSA", unit: "I15", indic_bt: "PRC_PRR", nace_r2: "F", geo: "EA20" },
     period: "Q",
   },
   {
     id: "labour_cost_industry",
     label: "Labour cost index – Industry & services (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", unit: "I20", lcstruct: "D1_D4_MD5", nace_r2: "B-S", geo: "EA20" },
+    params: { s_adj: "NSA", unit: "I20", lcstruct: "D1", nace_r2: "B-S", geo: "EA20" },
     period: "Q",
   },
   {
@@ -273,7 +273,7 @@ const RAILWAY_PRESETS = [
 ];
 
 // ---------- State ----------
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 function migrateDatasets() {
   const savedVersion = load("schemaVersion", 1);
   if (savedVersion < SCHEMA_VERSION) {
@@ -355,37 +355,37 @@ function parseJsonStat(data) {
   const ids = data.id || [];
   const sizes = data.size || [];
   const timePos = ids.indexOf("time");
+  if (timePos < 0) throw new Error("time dimension not found in id list");
 
-  // strides for flat index calculation
+  // Strides for flat index calculation (row-major; last dim varies fastest)
   const strides = new Array(ids.length).fill(1);
   for (let i = ids.length - 2; i >= 0; i--) strides[i] = strides[i + 1] * sizes[i + 1];
 
-  // Other dims locked to first index (single-value filters expected)
-  const fixed = new Array(ids.length).fill(0);
+  // Build period-by-time-index lookup
+  const periodByIdx = {};
+  for (const [period, idx] of Object.entries(indexMap)) {
+    periodByIdx[idx] = period;
+  }
+
+  // Walk every defined value, decode the time index from the flat key,
+  // keep the first non-null value per period.
+  const seenPeriods = new Map();
+  const timeStride = strides[timePos];
+  const timeSize = sizes[timePos];
+
+  for (const [key, val] of Object.entries(values)) {
+    if (val == null) continue;
+    const num = Number(val);
+    if (Number.isNaN(num)) continue;
+    const flat = Number(key);
+    if (Number.isNaN(flat)) continue;
+    const t = Math.floor(flat / timeStride) % timeSize;
+    const period = periodByIdx[t];
+    if (period && !seenPeriods.has(period)) seenPeriods.set(period, num);
+  }
 
   const series = [];
-  for (const [period, idx] of Object.entries(indexMap)) {
-    fixed[timePos] = idx;
-    let v = null;
-    // Try the single-cell flat index first
-    let flat = 0;
-    for (let d = 0; d < ids.length; d++) flat += fixed[d] * strides[d];
-    v = values[flat] ?? values[String(flat)];
-    // If not found and there are multiple cells per period, find first non-null
-    // whose flat index has the matching time component.
-    if (v == null && timePos >= 0) {
-      const timeStride = strides[timePos];
-      const timeBlock = sizes[timePos] ? Math.floor(flat / (sizes[timePos] * timeStride)) * (sizes[timePos] * timeStride) + idx * timeStride : flat;
-      for (let off = 0; off < timeStride; off++) {
-        const k = timeBlock + off;
-        if (values[k] != null) { v = values[k]; break; }
-        if (values[String(k)] != null) { v = values[String(k)]; break; }
-      }
-    }
-    if (v != null && !Number.isNaN(Number(v))) {
-      series.push({ period, value: Number(v) });
-    }
-  }
+  for (const [period, value] of seenPeriods) series.push({ period, value });
   series.sort((a, b) => comparePeriod(a.period, b.period));
   return series;
 }
