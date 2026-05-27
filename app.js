@@ -57,18 +57,123 @@ const DEFAULT_DATASETS = [
     period: "M",
   },
   {
-    id: "energy_hh_elec",
-    label: "Energy – Household electricity prices (S2)",
-    code: "nrg_pc_204",
-    params: {
-      nrg_prod: "6000",
-      nrg_cons: "KWH2500-4999",
-      unit: "KWH",
-      currency: "EUR",
-      tax: "I_TAX",
-      geo: "EU27_2020",
-    },
-    period: "S",
+    id: "energy_hicp",
+    label: "Energy – HICP electricity, gas & fuels (CP045)",
+    code: "prc_hicp_midx",
+    params: { unit: "I15", coicop: "CP045", geo: "EA" },
+    period: "M",
+  },
+];
+
+// ---------- EU contract indexation preset ----------
+// Indexes most commonly cited in price-revision clauses of B2B / B2C
+// contracts with EU customers (RPI/CPI, PPI, labour cost, construction,
+// services PPI, industrial production).
+const CONTRACT_PRESETS = [
+  {
+    id: "hicp_core",
+    label: "HICP – Core (excl. energy & food)",
+    code: "prc_hicp_midx",
+    params: { unit: "I15", coicop: "TOT_X_NRG_FOOD", geo: "EA" },
+    period: "M",
+  },
+  {
+    id: "hicp_services",
+    label: "HICP – Services",
+    code: "prc_hicp_midx",
+    params: { unit: "I15", coicop: "SERV", geo: "EA" },
+    period: "M",
+  },
+  {
+    id: "hicp_goods",
+    label: "HICP – Industrial goods",
+    code: "prc_hicp_midx",
+    params: { unit: "I15", coicop: "IGD", geo: "EA" },
+    period: "M",
+  },
+  {
+    id: "hicp_food",
+    label: "HICP – Food, alcohol & tobacco",
+    code: "prc_hicp_midx",
+    params: { unit: "I15", coicop: "FOOD", geo: "EA" },
+    period: "M",
+  },
+  {
+    id: "hicp_energy",
+    label: "HICP – Energy",
+    code: "prc_hicp_midx",
+    params: { unit: "I15", coicop: "NRG", geo: "EA" },
+    period: "M",
+  },
+  {
+    id: "ppi_domestic",
+    label: "PPI – Domestic market (industry, B-E36)",
+    code: "sts_inppd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "B-E36", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "ppi_nondomestic",
+    label: "PPI – Non-domestic market (industry, B-E36)",
+    code: "sts_inppnd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "B-E36", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "ppi_manufacturing",
+    label: "PPI – Manufacturing (C)",
+    code: "sts_inppd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "C", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "ppi_chemicals",
+    label: "PPI – Chemicals (C20)",
+    code: "sts_inppd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "C20", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "ppi_food",
+    label: "PPI – Food products (C10)",
+    code: "sts_inppd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "C10", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "lci_wages",
+    label: "Labour cost – Wages & salaries (B-S)",
+    code: "lc_lci_r2_q",
+    params: { s_adj: "NSA", unit: "I20", lcstruct: "D11", nace_r2: "B-S", geo: "EA20" },
+    period: "Q",
+  },
+  {
+    id: "lci_total",
+    label: "Labour cost – Total (B-S)",
+    code: "lc_lci_r2_q",
+    params: { s_adj: "NSA", unit: "I20", lcstruct: "D1_D4_MD5", nace_r2: "B-S", geo: "EA20" },
+    period: "Q",
+  },
+  {
+    id: "construction_residential",
+    label: "Construction – Producer prices, residential (CC1)",
+    code: "sts_copi_q",
+    params: { s_adj: "NSA", unit: "I15", indic_bt: "PRC_PRR", cc: "CC1", geo: "EA20" },
+    period: "Q",
+  },
+  {
+    id: "service_ppi_overall",
+    label: "Service producer prices – All (H-N)",
+    code: "sts_sepp_q",
+    params: { s_adj: "NSA", unit: "I15", nace_r2: "H-N_STS", geo: "EA20" },
+    period: "Q",
+  },
+  {
+    id: "industrial_production",
+    label: "Industrial production index (B-E36)",
+    code: "sts_inpr_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "B-E36", indic_bt: "PROD", geo: "EA20" },
+    period: "M",
   },
 ];
 
@@ -168,7 +273,7 @@ const RAILWAY_PRESETS = [
 ];
 
 // ---------- State ----------
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 function migrateDatasets() {
   const savedVersion = load("schemaVersion", 1);
   if (savedVersion < SCHEMA_VERSION) {
@@ -182,6 +287,7 @@ const state = {
   datasets: load("datasets", DEFAULT_DATASETS),
   country: load("country", ""), // "" = use each dataset's own geo
   series: {}, // id -> [{period, value}]
+  errors: {}, // id -> error message (persistent until next successful fetch)
   lastRefresh: null,
   autoRefresh: load("autoRefresh", false),
   autoRefreshTimer: null,
@@ -359,9 +465,10 @@ function renderDashboard() {
   container.innerHTML = "";
   for (const ds of state.datasets) {
     const series = state.series[ds.id] || [];
+    const err = state.errors[ds.id];
     const { last, mom, yoy } = momYoy(series, ds.period);
     const card = document.createElement("div");
-    card.className = "idx-card";
+    card.className = "idx-card" + (err ? " has-error" : "");
     card.innerHTML = `
       <div class="label">${escapeHtml(ds.label)}</div>
       <div class="code">${escapeHtml(ds.code)}</div>
@@ -371,6 +478,7 @@ function renderDashboard() {
         ${renderChangeTag("MoM", mom)}
         ${renderChangeTag("YoY", yoy)}
       </div>
+      ${err ? `<div class="card-error" title="${escapeAttr(err)}">⚠ ${escapeHtml(err)}</div>` : ""}
     `;
     container.appendChild(card);
   }
@@ -617,7 +725,10 @@ function renderDatasets() {
           ${["M", "Q", "S", "A"].map((p) => `<option value="${p}" ${p === ds.period ? "selected" : ""}>${p}</option>`).join("")}
         </select>
       </td>
-      <td><button class="btn btn-danger" data-del="${i}">✕</button></td>
+      <td style="white-space:nowrap">
+        <button class="btn" data-test="${i}" title="Run a test fetch and open the URL in a new tab">Test</button>
+        <button class="btn btn-danger" data-del="${i}">✕</button>
+      </td>
     `;
     tbody.appendChild(tr);
   });
@@ -637,6 +748,22 @@ function renderDatasets() {
     b.addEventListener("click", () => {
       state.datasets.splice(Number(b.dataset.del), 1);
       renderDatasets();
+    });
+  });
+  tbody.querySelectorAll("button[data-test]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      const ds = state.datasets[Number(b.dataset.test)];
+      const params = { ...ds.params };
+      if (state.country && "geo" in params) params.geo = state.country;
+      const qs = new URLSearchParams({ format: "JSON", lang: "EN", ...params });
+      const url = `${EUROSTAT_BASE}/${ds.code}?${qs.toString()}`;
+      window.open(url, "_blank", "noopener");
+      try {
+        const series = await fetchDataset(ds);
+        toast(`OK: ${series.length} data points`, "ok");
+      } catch (e) {
+        toast(e.message, "err");
+      }
     });
   });
 }
@@ -667,8 +794,15 @@ async function refreshAll() {
       try {
         const series = await fetchDataset(ds);
         state.series[ds.id] = series;
+        if (series.length === 0) {
+          state.errors[ds.id] = "Query returned 0 data points. Loosen filters in Settings.";
+          errors.push(`${ds.label}: empty result`);
+        } else {
+          delete state.errors[ds.id];
+        }
       } catch (e) {
         errors.push(`${ds.label}: ${e.message}`);
+        state.errors[ds.id] = e.message;
         state.series[ds.id] = state.series[ds.id] || [];
       }
     })
@@ -683,7 +817,7 @@ async function refreshAll() {
     toast(`Refreshed ${state.datasets.length} dataset(s)`, "ok");
   } else {
     setStatus("err", `${errors.length} error(s)`);
-    toast(errors.join("\n"), "err");
+    toast(errors[0] + (errors.length > 1 ? ` (+${errors.length - 1} more)` : ""), "err");
   }
 }
 
@@ -920,6 +1054,18 @@ function init() {
     }
     renderDatasets();
     toast(`Added ${added} railway preset(s) (click Save & refresh)`, "ok");
+  });
+  document.getElementById("addContractPreset").addEventListener("click", () => {
+    const existingIds = new Set(state.datasets.map((d) => d.id));
+    let added = 0;
+    for (const p of CONTRACT_PRESETS) {
+      if (!existingIds.has(p.id)) {
+        state.datasets.push(JSON.parse(JSON.stringify(p)));
+        added++;
+      }
+    }
+    renderDatasets();
+    toast(`Added ${added} contract indexation preset(s) (click Save & refresh)`, "ok");
   });
   document.getElementById("resetDatasets").addEventListener("click", () => {
     state.datasets = JSON.parse(JSON.stringify(DEFAULT_DATASETS));

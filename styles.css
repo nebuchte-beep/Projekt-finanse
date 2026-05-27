@@ -220,6 +220,18 @@ main { padding: 24px 28px 48px; max-width: 1400px; margin: 0 auto; }
 .change-tag.neg { background: var(--red-bg); color: var(--red); }
 .change-tag.neu { background: #f1f5f9; color: var(--muted); }
 
+.idx-card.has-error { border-color: #fca5a5; background: #fff7f7; }
+.card-error {
+  margin-top: 10px;
+  background: var(--red-bg);
+  color: var(--red);
+  border-radius: 5px;
+  padding: 6px 9px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
 /* ---------- Tables ---------- */
 .table-wrap { overflow-x: auto; }
 table {
