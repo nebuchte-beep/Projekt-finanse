@@ -5,7 +5,42 @@
 const EUROSTAT_BASE =
   "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data";
 
-// ---------- Default datasets ----------
+// ---------- EU countries / aggregates ----------
+const COUNTRIES = [
+  { code: "EA",         label: "Euro area (changing composition)" },
+  { code: "EA20",       label: "Euro area – 20 countries" },
+  { code: "EA19",       label: "Euro area – 19 countries" },
+  { code: "EU27_2020",  label: "European Union – 27 countries" },
+  { code: "AT",         label: "Austria" },
+  { code: "BE",         label: "Belgium" },
+  { code: "BG",         label: "Bulgaria" },
+  { code: "HR",         label: "Croatia" },
+  { code: "CY",         label: "Cyprus" },
+  { code: "CZ",         label: "Czechia" },
+  { code: "DK",         label: "Denmark" },
+  { code: "EE",         label: "Estonia" },
+  { code: "FI",         label: "Finland" },
+  { code: "FR",         label: "France" },
+  { code: "DE",         label: "Germany" },
+  { code: "EL",         label: "Greece" },
+  { code: "HU",         label: "Hungary" },
+  { code: "IE",         label: "Ireland" },
+  { code: "IT",         label: "Italy" },
+  { code: "LV",         label: "Latvia" },
+  { code: "LT",         label: "Lithuania" },
+  { code: "LU",         label: "Luxembourg" },
+  { code: "MT",         label: "Malta" },
+  { code: "NL",         label: "Netherlands" },
+  { code: "PL",         label: "Poland" },
+  { code: "PT",         label: "Portugal" },
+  { code: "RO",         label: "Romania" },
+  { code: "SK",         label: "Slovakia" },
+  { code: "SI",         label: "Slovenia" },
+  { code: "ES",         label: "Spain" },
+  { code: "SE",         label: "Sweden" },
+];
+
+// ---------- Default datasets (HICP, PPI, Energy) ----------
 const DEFAULT_DATASETS = [
   {
     id: "hicp",
@@ -18,16 +53,16 @@ const DEFAULT_DATASETS = [
     id: "ppi",
     label: "PPI – Producer Price Index (Industry, NSA)",
     code: "sts_inppd_m",
-    params: { s_adj: "NSA", unit: "I21", nace_r2: "B-E36", geo: "EA" },
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "B-E36", geo: "EA20" },
     period: "M",
   },
   {
-    id: "energy",
-    label: "Energy – Household electricity prices",
+    id: "energy_hh_elec",
+    label: "Energy – Household electricity prices (S2)",
     code: "nrg_pc_204",
     params: {
       product: "6000",
-      consom: "4161902",
+      nrg_cons: "KWH2500-4999",
       unit: "KWH",
       currency: "EUR",
       tax: "I_TAX",
@@ -37,9 +72,115 @@ const DEFAULT_DATASETS = [
   },
 ];
 
+// ---------- Railway-sector preset (finance & procurement) ----------
+const RAILWAY_PRESETS = [
+  {
+    id: "hicp_rail_pax",
+    label: "HICP – Passenger transport by railway",
+    code: "prc_hicp_midx",
+    params: { unit: "I15", coicop: "CP0731", geo: "EA" },
+    period: "M",
+  },
+  {
+    id: "hicp_transport_fuels",
+    label: "HICP – Fuels & lubricants for personal transport",
+    code: "prc_hicp_midx",
+    params: { unit: "I15", coicop: "CP0722", geo: "EA" },
+    period: "M",
+  },
+  {
+    id: "hicp_electricity",
+    label: "HICP – Electricity (consumer)",
+    code: "prc_hicp_midx",
+    params: { unit: "I15", coicop: "CP0451", geo: "EA" },
+    period: "M",
+  },
+  {
+    id: "ppi_basic_metals",
+    label: "PPI – Basic metals (rails, steel)",
+    code: "sts_inppd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "C24", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "ppi_electrical_eq",
+    label: "PPI – Electrical equipment (traction, signalling)",
+    code: "sts_inppd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "C27", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "ppi_machinery",
+    label: "PPI – Machinery & equipment (rolling stock components)",
+    code: "sts_inppd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "C28", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "ppi_other_transport_eq",
+    label: "PPI – Other transport equipment (locomotives, wagons – C30)",
+    code: "sts_inppd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "C30", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "ppi_energy",
+    label: "PPI – Electricity, gas, steam supply (industrial energy)",
+    code: "sts_inppd_m",
+    params: { s_adj: "NSA", unit: "I21", nace_r2: "D35", geo: "EA20" },
+    period: "M",
+  },
+  {
+    id: "construction_cost",
+    label: "Construction – Producer prices, civil engineering",
+    code: "sts_copi_q",
+    params: { s_adj: "NSA", unit: "I15", indic_bt: "PRC_PRR", cc: "CC2", geo: "EA20" },
+    period: "Q",
+  },
+  {
+    id: "labour_cost_industry",
+    label: "Labour cost index – Industry & services (B-S)",
+    code: "lc_lci_r2_q",
+    params: { s_adj: "NSA", unit: "I20", lcstruct: "D1_D4_MD5", nace_r2: "B-S", geo: "EA20" },
+    period: "Q",
+  },
+  {
+    id: "service_ppi_land_transport",
+    label: "Service producer prices – Land transport (H49)",
+    code: "sts_sepp_q",
+    params: { s_adj: "NSA", unit: "I15", nace_r2: "H49", geo: "EA20" },
+    period: "Q",
+  },
+  {
+    id: "diesel_nonhh",
+    label: "Energy – Diesel (non-household) prices",
+    code: "nrg_pc_205",
+    params: {
+      product: "6000",
+      nrg_cons: "MWH500-1999",
+      unit: "KWH",
+      currency: "EUR",
+      tax: "X_TAX",
+      geo: "EU27_2020",
+    },
+    period: "S",
+  },
+];
+
 // ---------- State ----------
+const SCHEMA_VERSION = 2;
+function migrateDatasets() {
+  const savedVersion = load("schemaVersion", 1);
+  if (savedVersion < SCHEMA_VERSION) {
+    save("datasets", DEFAULT_DATASETS);
+    save("schemaVersion", SCHEMA_VERSION);
+  }
+}
+migrateDatasets();
+
 const state = {
   datasets: load("datasets", DEFAULT_DATASETS),
+  country: load("country", ""), // "" = use each dataset's own geo
   series: {}, // id -> [{period, value}]
   lastRefresh: null,
   autoRefresh: load("autoRefresh", false),
@@ -81,10 +222,20 @@ function save(key, value) {
 // ============================================================
 
 async function fetchDataset(dataset) {
-  const qs = new URLSearchParams({ format: "JSON", lang: "EN", ...dataset.params });
+  const params = { ...dataset.params };
+  if (state.country && "geo" in params) params.geo = state.country;
+  const qs = new URLSearchParams({ format: "JSON", lang: "EN", ...params });
   const url = `${EUROSTAT_BASE}/${dataset.code}?${qs.toString()}`;
   const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${dataset.code}`);
+  if (!resp.ok) {
+    let detail = "";
+    try {
+      const body = await resp.text();
+      const j = JSON.parse(body);
+      detail = j?.error?.label || j?.error?.[0]?.label || body.slice(0, 160);
+    } catch {}
+    throw new Error(`HTTP ${resp.status} ${dataset.code}${detail ? " – " + detail : ""}`);
+  }
   const data = await resp.json();
   return parseJsonStat(data);
 }
@@ -109,10 +260,23 @@ function parseJsonStat(data) {
   const series = [];
   for (const [period, idx] of Object.entries(indexMap)) {
     fixed[timePos] = idx;
+    let v = null;
+    // Try the single-cell flat index first
     let flat = 0;
     for (let d = 0; d < ids.length; d++) flat += fixed[d] * strides[d];
-    const v = values[flat] ?? values[String(flat)];
-    if (v != null && !Number.isNaN(v)) {
+    v = values[flat] ?? values[String(flat)];
+    // If not found and there are multiple cells per period, find first non-null
+    // whose flat index has the matching time component.
+    if (v == null && timePos >= 0) {
+      const timeStride = strides[timePos];
+      const timeBlock = sizes[timePos] ? Math.floor(flat / (sizes[timePos] * timeStride)) * (sizes[timePos] * timeStride) + idx * timeStride : flat;
+      for (let off = 0; off < timeStride; off++) {
+        const k = timeBlock + off;
+        if (values[k] != null) { v = values[k]; break; }
+        if (values[String(k)] != null) { v = values[String(k)]; break; }
+      }
+    }
+    if (v != null && !Number.isNaN(Number(v))) {
       series.push({ period, value: Number(v) });
     }
   }
@@ -673,8 +837,23 @@ function applyAutoRefresh() {
   }
 }
 
+function setupCountry() {
+  const sel = document.getElementById("countrySelect");
+  sel.innerHTML =
+    `<option value="">Dataset default</option>` +
+    COUNTRIES.map(
+      (c) => `<option value="${c.code}" ${c.code === state.country ? "selected" : ""}>${escapeHtml(c.label)} (${c.code})</option>`
+    ).join("");
+  sel.addEventListener("change", () => {
+    state.country = sel.value;
+    save("country", state.country);
+    refreshAll();
+  });
+}
+
 function init() {
   setupTabs();
+  setupCountry();
   setupAutoRefresh();
 
   document.getElementById("refreshBtn").addEventListener("click", refreshAll);
@@ -729,6 +908,23 @@ function init() {
       period: "M",
     });
     renderDatasets();
+  });
+  document.getElementById("addRailwayPreset").addEventListener("click", () => {
+    const existingIds = new Set(state.datasets.map((d) => d.id));
+    let added = 0;
+    for (const p of RAILWAY_PRESETS) {
+      if (!existingIds.has(p.id)) {
+        state.datasets.push(JSON.parse(JSON.stringify(p)));
+        added++;
+      }
+    }
+    renderDatasets();
+    toast(`Added ${added} railway preset(s) (click Save & refresh)`, "ok");
+  });
+  document.getElementById("resetDatasets").addEventListener("click", () => {
+    state.datasets = JSON.parse(JSON.stringify(DEFAULT_DATASETS));
+    renderDatasets();
+    toast("Datasets reset to defaults", "ok");
   });
   document.getElementById("saveDatasets").addEventListener("click", async () => {
     save("datasets", state.datasets);

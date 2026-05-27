@@ -17,6 +17,10 @@
       </div>
     </div>
     <div class="header-actions">
+      <label class="country-select">
+        Country
+        <select id="countrySelect"></select>
+      </label>
       <span class="status-pill" id="connStatus">Idle</span>
       <span class="last-refresh">Last refresh: <span id="lastRefresh">—</span></span>
       <label class="auto-refresh">
@@ -201,6 +205,8 @@
         </div>
         <div class="card-actions">
           <button class="btn" id="addDataset">+ Add dataset</button>
+          <button class="btn" id="addRailwayPreset">+ Add railway sector preset</button>
+          <button class="btn" id="resetDatasets">Reset to defaults</button>
           <button class="btn btn-primary" id="saveDatasets">Save &amp; refresh</button>
         </div>
         <p class="hint">

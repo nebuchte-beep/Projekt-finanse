@@ -87,6 +87,20 @@ code {
   color: #cbd5e1; font-size: 12.5px;
 }
 
+.country-select {
+  display: flex; align-items: center; gap: 6px;
+  color: #cbd5e1; font-size: 12.5px;
+}
+.country-select select {
+  background: #1e293b;
+  color: #fff;
+  border: 1px solid #334155;
+  border-radius: 5px;
+  padding: 5px 8px;
+  font: inherit;
+  min-width: 170px;
+}
+
 /* ---------- Buttons ---------- */
 .btn {
   background: #fff;
