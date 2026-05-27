@@ -61,7 +61,7 @@ const DEFAULT_DATASETS = [
     label: "Energy – Household electricity prices (S2)",
     code: "nrg_pc_204",
     params: {
-      product: "6000",
+      nrg_prod: "6000",
       nrg_cons: "KWH2500-4999",
       unit: "KWH",
       currency: "EUR",
@@ -152,11 +152,11 @@ const RAILWAY_PRESETS = [
     period: "Q",
   },
   {
-    id: "diesel_nonhh",
-    label: "Energy – Diesel (non-household) prices",
+    id: "energy_nonhh_elec",
+    label: "Energy – Non-household electricity prices",
     code: "nrg_pc_205",
     params: {
-      product: "6000",
+      nrg_prod: "6000",
       nrg_cons: "MWH500-1999",
       unit: "KWH",
       currency: "EUR",
@@ -168,7 +168,7 @@ const RAILWAY_PRESETS = [
 ];
 
 // ---------- State ----------
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 function migrateDatasets() {
   const savedVersion = load("schemaVersion", 1);
   if (savedVersion < SCHEMA_VERSION) {
