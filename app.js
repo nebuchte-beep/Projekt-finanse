@@ -144,35 +144,35 @@ const CONTRACT_PRESETS = [
     id: "lci_wages",
     label: "Labour cost – Wages & salaries (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", unit: "I20", lcstruct: "D11", nace_r2: "B-S", geo: "EA20" },
+    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D11", geo: "EA20" },
     period: "Q",
   },
   {
     id: "lci_total",
     label: "Labour cost – Total (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", unit: "I20", lcstruct: "D1", nace_r2: "B-S", geo: "EA20" },
+    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D1", geo: "EA20" },
     period: "Q",
   },
   {
-    id: "construction_residential",
-    label: "Construction – Producer prices (NACE F)",
+    id: "construction_prices",
+    label: "Construction – Producer prices",
     code: "sts_copi_q",
-    params: { s_adj: "NSA", unit: "I15", indic_bt: "PRC_PRR", nace_r2: "F", geo: "EA20" },
+    params: { s_adj: "NSA", indic_bt: "PRC_PRR", geo: "EA20" },
     period: "Q",
   },
   {
     id: "service_ppi_overall",
     label: "Service producer prices – Transport (H49)",
     code: "sts_sepp_q",
-    params: { s_adj: "NSA", unit: "I15", nace_r2: "H49", geo: "EA20" },
+    params: { s_adj: "NSA", nace_r2: "H49", geo: "EA20" },
     period: "Q",
   },
   {
     id: "industrial_production",
     label: "Industrial production index (B-E36)",
     code: "sts_inpr_m",
-    params: { s_adj: "NSA", unit: "I21", nace_r2: "B-E36", indic_bt: "PROD", geo: "EU27_2020" },
+    params: { s_adj: "NSA", nace_r2: "B-E36", indic_bt: "PROD", geo: "EU27_2020" },
     period: "M",
   },
 ];
@@ -237,16 +237,16 @@ const RAILWAY_PRESETS = [
   },
   {
     id: "construction_cost",
-    label: "Construction – Producer prices (NACE F)",
+    label: "Construction – Producer prices",
     code: "sts_copi_q",
-    params: { s_adj: "NSA", unit: "I15", indic_bt: "PRC_PRR", nace_r2: "F", geo: "EA20" },
+    params: { s_adj: "NSA", indic_bt: "PRC_PRR", geo: "EA20" },
     period: "Q",
   },
   {
     id: "labour_cost_industry",
     label: "Labour cost index – Industry & services (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", unit: "I20", lcstruct: "D1", nace_r2: "B-S", geo: "EA20" },
+    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D1", geo: "EA20" },
     period: "Q",
   },
   {
@@ -273,7 +273,7 @@ const RAILWAY_PRESETS = [
 ];
 
 // ---------- State ----------
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 function migrateDatasets() {
   const savedVersion = load("schemaVersion", 1);
   if (savedVersion < SCHEMA_VERSION) {
@@ -326,6 +326,44 @@ function save(key, value) {
 // ============================================================
 // Eurostat fetch + JSON-stat parsing
 // ============================================================
+
+// Inspect a dataset: fetch its structure with a small time slice and
+// return the list of dimensions with their valid codes.
+async function inspectDataset(dataset) {
+  const yr = new Date().getFullYear();
+  const tryFetch = async (params) => {
+    const qs = new URLSearchParams({ format: "JSON", lang: "EN", ...params });
+    const url = `${EUROSTAT_BASE}/${dataset.code}?${qs}`;
+    const resp = await fetch(url);
+    return { resp, url };
+  };
+
+  let { resp } = await tryFetch({ ...dataset.params, time: yr });
+  if (!resp.ok) {
+    // Drop user's possibly-wrong params and just slice by recent years
+    ({ resp } = await tryFetch({ time: yr }));
+  }
+  if (!resp.ok) {
+    ({ resp } = await tryFetch({ sinceTimePeriod: yr - 1 }));
+  }
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} – cannot inspect`);
+  const data = await resp.json();
+  const dims = [];
+  for (const dimId of data.id || []) {
+    if (dimId === "time") continue;
+    const def = data.dimension?.[dimId];
+    if (!def) continue;
+    const codes = Object.keys(def.category?.index || {});
+    const labels = def.category?.label || {};
+    dims.push({
+      id: dimId,
+      label: def.label || dimId,
+      values: codes.slice(0, 50).map((c) => ({ code: c, label: labels[c] || c })),
+      total: codes.length,
+    });
+  }
+  return dims;
+}
 
 async function fetchDataset(dataset) {
   const params = { ...dataset.params };
@@ -726,11 +764,17 @@ function renderDatasets() {
         </select>
       </td>
       <td style="white-space:nowrap">
-        <button class="btn" data-test="${i}" title="Run a test fetch and open the URL in a new tab">Test</button>
+        <button class="btn" data-test="${i}" title="Run the fetch and open the URL in a new tab">Test</button>
+        <button class="btn" data-inspect="${i}" title="Show valid dimensions & values for this dataset">Inspect</button>
         <button class="btn btn-danger" data-del="${i}">✕</button>
       </td>
     `;
     tbody.appendChild(tr);
+    const inspectRow = document.createElement("tr");
+    inspectRow.id = `inspect-row-${i}`;
+    inspectRow.style.display = "none";
+    inspectRow.innerHTML = `<td colspan="5"><div class="inspect-panel" id="inspect-panel-${i}"></div></td>`;
+    tbody.appendChild(inspectRow);
   });
 
   tbody.querySelectorAll("input, select").forEach((el) => {
@@ -766,6 +810,63 @@ function renderDatasets() {
       }
     });
   });
+  tbody.querySelectorAll("button[data-inspect]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      const i = Number(b.dataset.inspect);
+      const ds = state.datasets[i];
+      const row = document.getElementById(`inspect-row-${i}`);
+      const panel = document.getElementById(`inspect-panel-${i}`);
+      row.style.display = "";
+      panel.innerHTML = `<em>Loading dataset structure for <code>${escapeHtml(ds.code)}</code>…</em>`;
+      try {
+        const dims = await inspectDataset(ds);
+        panel.innerHTML = renderInspectPanel(ds, dims);
+        panel.querySelectorAll("[data-apply-dim]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const dim = btn.dataset.applyDim;
+            const code = btn.dataset.applyCode;
+            ds.params = { ...ds.params, [dim]: code };
+            renderDatasets();
+          });
+        });
+      } catch (e) {
+        panel.innerHTML = `<div class="card-error">⚠ ${escapeHtml(e.message)}</div>`;
+      }
+    });
+  });
+}
+
+function renderInspectPanel(ds, dims) {
+  if (dims.length === 0) return `<em>No dimensions found.</em>`;
+  const currentParams = ds.params || {};
+  const blocks = dims
+    .map((d) => {
+      const current = currentParams[d.id];
+      const valid = d.values.some((v) => v.code === current);
+      const flag = current
+        ? valid
+          ? `<span class="dim-ok">✓ current: ${escapeHtml(current)}</span>`
+          : `<span class="dim-bad">⚠ current value "${escapeHtml(current)}" not in this dim</span>`
+        : `<span class="dim-missing">no value set</span>`;
+      const chips = d.values
+        .map(
+          (v) =>
+            `<button class="dim-chip${v.code === current ? " active" : ""}" data-apply-dim="${escapeAttr(d.id)}" data-apply-code="${escapeAttr(v.code)}" title="${escapeAttr(v.label)}">${escapeHtml(v.code)}</button>`
+        )
+        .join("");
+      const more = d.total > d.values.length ? `<em class="dim-more">…and ${d.total - d.values.length} more</em>` : "";
+      return `
+        <div class="dim-block">
+          <div class="dim-head"><strong>${escapeHtml(d.id)}</strong> – ${escapeHtml(d.label)} ${flag}</div>
+          <div class="dim-chips">${chips}${more}</div>
+        </div>`;
+    })
+    .join("");
+  const unknown = Object.keys(currentParams).filter((k) => !dims.some((d) => d.id === k));
+  const warn = unknown.length
+    ? `<div class="card-error">⚠ Param(s) <code>${unknown.map(escapeHtml).join(", ")}</code> not a valid dimension for this dataset – remove them.</div>`
+    : "";
+  return `${warn}<div class="inspect-grid">${blocks}</div><p class="hint">Click a value to set it as the dataset's filter. Then click <em>Save &amp; refresh</em>.</p>`;
 }
 
 function paramsToString(params) {

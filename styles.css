@@ -221,6 +221,41 @@ main { padding: 24px 28px 48px; max-width: 1400px; margin: 0 auto; }
 .change-tag.neu { background: #f1f5f9; color: var(--muted); }
 
 .idx-card.has-error { border-color: #fca5a5; background: #fff7f7; }
+
+/* Dataset inspector panel */
+.inspect-panel {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  margin: 6px 0 10px;
+}
+.inspect-grid { display: grid; gap: 12px; }
+.dim-block {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 10px;
+}
+.dim-head { font-size: 12.5px; margin-bottom: 6px; color: #334155; }
+.dim-ok { color: var(--green); margin-left: 8px; font-size: 11.5px; }
+.dim-bad { color: var(--red); margin-left: 8px; font-size: 11.5px; }
+.dim-missing { color: var(--muted); margin-left: 8px; font-size: 11.5px; }
+.dim-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.dim-chip {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+  color: #334155;
+}
+.dim-chip:hover { background: #eff6ff; border-color: var(--primary); color: var(--primary); }
+.dim-chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.dim-more { color: var(--muted); font-size: 11.5px; align-self: center; margin-left: 4px; }
 .card-error {
   margin-top: 10px;
   background: var(--red-bg);
