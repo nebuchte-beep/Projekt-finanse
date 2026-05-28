@@ -221,6 +221,15 @@ main { padding: 24px 28px 48px; max-width: 1400px; margin: 0 auto; }
 .change-tag.neu { background: #f1f5f9; color: var(--muted); }
 
 .idx-card.has-error { border-color: #fca5a5; background: #fff7f7; }
+.card-note {
+  margin-top: 10px;
+  background: #eff6ff;
+  color: #1e40af;
+  border-radius: 5px;
+  padding: 6px 9px;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
 
 /* Dataset inspector panel */
 .inspect-panel {

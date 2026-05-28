@@ -273,7 +273,7 @@ const RAILWAY_PRESETS = [
 ];
 
 // ---------- State ----------
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 function migrateDatasets() {
   const savedVersion = load("schemaVersion", 1);
   if (savedVersion < SCHEMA_VERSION) {
@@ -288,6 +288,7 @@ const state = {
   country: load("country", ""), // "" = use each dataset's own geo
   series: {}, // id -> [{period, value}]
   errors: {}, // id -> error message (persistent until next successful fetch)
+  notes: {}, // id -> informational note (e.g. auto-adjusted filters)
   lastRefresh: null,
   autoRefresh: load("autoRefresh", false),
   autoRefreshTimer: null,
@@ -387,6 +388,76 @@ async function fetchDataset(dataset) {
   }
   const data = await resp.json();
   return parseJsonStat(data);
+}
+
+// Preferred values per dimension when we have to auto-pick one.
+const PREFER = {
+  s_adj: ["NSA", "SCA", "CA", "SA"],
+  tax: ["I_TAX", "X_TAX", "X_VAT"],
+  currency: ["EUR", "NAC", "PPS"],
+  nrg_prod: ["6000", "4100"],
+  product: ["6000", "4100"],
+  coicop: ["CP00"],
+  indic_bt: ["PROD", "PRC_PRR"],
+};
+
+function pickValue(dimId, values, userVal, country) {
+  const codes = values.map((v) => v.code);
+  if (codes.length === 0) return undefined;
+  if (userVal && codes.includes(userVal)) return userVal;
+  if (dimId === "geo") {
+    for (const g of [country, "EU27_2020", "EA20", "EA19", "EA", "EU28"]) {
+      if (g && codes.includes(g)) return g;
+    }
+    return codes[0];
+  }
+  if (dimId === "unit") {
+    // Prefer an index unit (I15 / I20 / I21 …) over % change variants.
+    const idx = codes.find((c) => /^I\d/.test(c)) || codes.find((c) => /^INX|^IDX/.test(c));
+    if (idx) return idx;
+  }
+  if (PREFER[dimId]) {
+    for (const p of PREFER[dimId]) if (codes.includes(p)) return p;
+  }
+  return codes[0];
+}
+
+// Self-healing fetch: if the configured query errors or returns no rows,
+// inspect the dataset structure, drop params that aren't real dimensions,
+// pick valid values for every dimension, and retry. As a last resort,
+// query by geo only and let the parser surface whatever data exists.
+async function fetchDatasetSmart(dataset) {
+  try {
+    const series = await fetchDataset(dataset);
+    if (series.length > 0) return { series, resolved: null };
+  } catch (e) {
+    // fall through to healing
+  }
+
+  const dims = await inspectDataset(dataset);
+  if (dims.length === 0) throw new Error("Could not read dataset structure");
+
+  const resolved = {};
+  for (const d of dims) {
+    const v = pickValue(d.id, d.values, dataset.params[d.id], state.country);
+    if (v !== undefined) resolved[d.id] = v;
+  }
+  let series = await fetchDataset({ ...dataset, params: resolved });
+  if (series.length > 0) return { series, resolved };
+
+  // Relax: drop seasonal adjustment (a frequent source of empty combos).
+  if ("s_adj" in resolved) {
+    const relaxed = { ...resolved };
+    delete relaxed.s_adj;
+    series = await fetchDataset({ ...dataset, params: relaxed });
+    if (series.length > 0) return { series, resolved: relaxed };
+  }
+
+  // Last resort: geo only — parser picks the first non-null cell.
+  const minimal = {};
+  if (resolved.geo) minimal.geo = resolved.geo;
+  series = await fetchDataset({ ...dataset, params: minimal });
+  return { series, resolved: minimal, approximate: true };
 }
 
 function parseJsonStat(data) {
@@ -509,6 +580,7 @@ function renderDashboard() {
   for (const ds of state.datasets) {
     const series = state.series[ds.id] || [];
     const err = state.errors[ds.id];
+    const note = state.notes[ds.id];
     const { last, mom, yoy } = momYoy(series, ds.period);
     const card = document.createElement("div");
     card.className = "idx-card" + (err ? " has-error" : "");
@@ -522,6 +594,7 @@ function renderDashboard() {
         ${renderChangeTag("YoY", yoy)}
       </div>
       ${err ? `<div class="card-error" title="${escapeAttr(err)}">⚠ ${escapeHtml(err)}</div>` : ""}
+      ${!err && note ? `<div class="card-note" title="${escapeAttr(note)}">ⓘ ${escapeHtml(note)}</div>` : ""}
     `;
     container.appendChild(card);
   }
@@ -895,16 +968,28 @@ function stringToParams(s) {
 async function refreshAll() {
   setStatus("loading", "Loading…");
   const errors = [];
+  let healed = 0;
   await Promise.all(
     state.datasets.map(async (ds) => {
       try {
-        const series = await fetchDataset(ds);
+        const { series, resolved, approximate } = await fetchDatasetSmart(ds);
         state.series[ds.id] = series;
         if (series.length === 0) {
-          state.errors[ds.id] = "Query returned 0 data points. Loosen filters in Settings.";
+          state.errors[ds.id] = "Query returned 0 data points. Use Inspect in Settings.";
           errors.push(`${ds.label}: empty result`);
+          return;
+        }
+        delete state.errors[ds.id];
+        // Persist auto-resolved params so the dataset keeps working and
+        // Settings reflects what actually loaded.
+        if (resolved) {
+          ds.params = resolved;
+          healed++;
+          state.notes[ds.id] = approximate
+            ? "Filters auto-adjusted (approximate — refine via Inspect)"
+            : "Filters auto-adjusted to valid values";
         } else {
-          delete state.errors[ds.id];
+          delete state.notes[ds.id];
         }
       } catch (e) {
         errors.push(`${ds.label}: ${e.message}`);
@@ -913,14 +998,16 @@ async function refreshAll() {
       }
     })
   );
+  if (healed > 0) save("datasets", state.datasets);
   state.lastRefresh = new Date();
   document.getElementById("lastRefresh").textContent = state.lastRefresh.toLocaleString();
   renderDashboard();
+  renderDatasets();
   renderCalculator();
   renderSupplier();
   if (errors.length === 0) {
     setStatus("ok", "Connected");
-    toast(`Refreshed ${state.datasets.length} dataset(s)`, "ok");
+    toast(`Refreshed ${state.datasets.length} dataset(s)` + (healed ? `, ${healed} auto-adjusted` : ""), "ok");
   } else {
     setStatus("err", `${errors.length} error(s)`);
     toast(errors[0] + (errors.length > 1 ? ` (+${errors.length - 1} more)` : ""), "err");
