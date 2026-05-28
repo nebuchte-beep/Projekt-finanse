@@ -144,14 +144,14 @@ const CONTRACT_PRESETS = [
     id: "lci_wages",
     label: "Labour cost – Wages & salaries (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D11", geo: "EA20" },
+    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D11", geo: "EU27_2020" },
     period: "Q",
   },
   {
     id: "lci_total",
     label: "Labour cost – Total (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D1", geo: "EA20" },
+    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D1_D4_MD5", geo: "EU27_2020" },
     period: "Q",
   },
   {
@@ -172,7 +172,7 @@ const CONTRACT_PRESETS = [
     id: "industrial_production",
     label: "Industrial production index (B-E36)",
     code: "sts_inpr_m",
-    params: { s_adj: "NSA", nace_r2: "B-E36", indic_bt: "PROD", geo: "EU27_2020" },
+    params: { s_adj: "NSA", unit: "I15", nace_r2: "B-E36", indic_bt: "PROD", geo: "EU27_2020" },
     period: "M",
   },
 ];
@@ -246,7 +246,7 @@ const RAILWAY_PRESETS = [
     id: "labour_cost_industry",
     label: "Labour cost index – Industry & services (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D1", geo: "EA20" },
+    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D1_D4_MD5", geo: "EU27_2020" },
     period: "Q",
   },
   {
@@ -273,7 +273,7 @@ const RAILWAY_PRESETS = [
 ];
 
 // ---------- State ----------
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 function migrateDatasets() {
   const savedVersion = load("schemaVersion", 1);
   if (savedVersion < SCHEMA_VERSION) {
@@ -330,7 +330,6 @@ function save(key, value) {
 // Inspect a dataset: fetch its structure with a small time slice and
 // return the list of dimensions with their valid codes.
 async function inspectDataset(dataset) {
-  const yr = new Date().getFullYear();
   const tryFetch = async (params) => {
     const qs = new URLSearchParams({ format: "JSON", lang: "EN", ...params });
     const url = `${EUROSTAT_BASE}/${dataset.code}?${qs}`;
@@ -338,13 +337,12 @@ async function inspectDataset(dataset) {
     return { resp, url };
   };
 
-  let { resp } = await tryFetch({ ...dataset.params, time: yr });
+  // lastTimePeriod=1 returns only the latest period (smallest payload) while
+  // still describing every dimension and its codes.
+  let { resp } = await tryFetch({ ...dataset.params, lastTimePeriod: 1 });
   if (!resp.ok) {
-    // Drop user's possibly-wrong params and just slice by recent years
-    ({ resp } = await tryFetch({ time: yr }));
-  }
-  if (!resp.ok) {
-    ({ resp } = await tryFetch({ sinceTimePeriod: yr - 1 }));
+    // Drop user's possibly-wrong params
+    ({ resp } = await tryFetch({ lastTimePeriod: 1 }));
   }
   if (!resp.ok) throw new Error(`HTTP ${resp.status} – cannot inspect`);
   const data = await resp.json();
@@ -368,6 +366,11 @@ async function inspectDataset(dataset) {
 async function fetchDataset(dataset) {
   const params = { ...dataset.params };
   if (state.country && "geo" in params) params.geo = state.country;
+  // Limit the number of returned periods to keep payloads small and avoid
+  // Eurostat's HTTP 413 "asynchronous response" for large result sets.
+  if (!("lastTimePeriod" in params) && !("sinceTimePeriod" in params)) {
+    params.lastTimePeriod = 130;
+  }
   const qs = new URLSearchParams({ format: "JSON", lang: "EN", ...params });
   const url = `${EUROSTAT_BASE}/${dataset.code}?${qs.toString()}`;
   const resp = await fetch(url);
