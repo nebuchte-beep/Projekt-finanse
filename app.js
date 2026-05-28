@@ -144,14 +144,14 @@ const CONTRACT_PRESETS = [
     id: "lci_wages",
     label: "Labour cost – Wages & salaries (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D11", geo: "EU27_2020" },
+    params: { s_adj: "NSA", unit: "I20", nace_r2: "B-S", lcstruct: "D11", geo: "EU27_2020" },
     period: "Q",
   },
   {
     id: "lci_total",
     label: "Labour cost – Total (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D1_D4_MD5", geo: "EU27_2020" },
+    params: { s_adj: "NSA", unit: "I20", nace_r2: "B-S", lcstruct: "D1_D4_MD5", geo: "EU27_2020" },
     period: "Q",
   },
   {
@@ -246,7 +246,7 @@ const RAILWAY_PRESETS = [
     id: "labour_cost_industry",
     label: "Labour cost index – Industry & services (B-S)",
     code: "lc_lci_r2_q",
-    params: { s_adj: "NSA", nace_r2: "B-S", lcstruct: "D1_D4_MD5", geo: "EU27_2020" },
+    params: { s_adj: "NSA", unit: "I20", nace_r2: "B-S", lcstruct: "D1_D4_MD5", geo: "EU27_2020" },
     period: "Q",
   },
   {
@@ -273,7 +273,7 @@ const RAILWAY_PRESETS = [
 ];
 
 // ---------- State ----------
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 function migrateDatasets() {
   const savedVersion = load("schemaVersion", 1);
   if (savedVersion < SCHEMA_VERSION) {
@@ -337,12 +337,14 @@ async function inspectDataset(dataset) {
     return { resp, url };
   };
 
-  // lastTimePeriod=1 returns only the latest period (smallest payload) while
-  // still describing every dimension and its codes.
-  let { resp } = await tryFetch({ ...dataset.params, lastTimePeriod: 1 });
+  // Query WITHOUT the user's dimension filters so every dimension lists all
+  // of its valid codes (not just the one the user already picked).
+  // lastTimePeriod=1 keeps the payload tiny.
+  let { resp } = await tryFetch({ lastTimePeriod: 1 });
   if (!resp.ok) {
-    // Drop user's possibly-wrong params
-    ({ resp } = await tryFetch({ lastTimePeriod: 1 }));
+    // Some datasets are too large even for one period; fall back to the
+    // user's filters which at least narrow it down.
+    ({ resp } = await tryFetch({ ...dataset.params, lastTimePeriod: 1 }));
   }
   if (!resp.ok) throw new Error(`HTTP ${resp.status} – cannot inspect`);
   const data = await resp.json();
