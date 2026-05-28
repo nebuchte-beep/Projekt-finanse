@@ -69,7 +69,14 @@
     <section class="tab-panel" id="tab-calculator">
       <div class="panel-head">
         <h2>Indexation Calculator</h2>
-        <p>Formula: <code>Price_new = Price_base × (Index_target / Index_base)</code></p>
+        <p>Per-line indexation formulas: weighted baskets, partial pass-through, caps/floors, annual vs. cumulative.</p>
+      </div>
+
+      <div class="card formula-card">
+        <div class="card-head">
+          <h3>Formula <span id="formulaRowLabel" class="formula-row-label"></span></h3>
+        </div>
+        <div id="formulaDisplay" class="formula-display">Select a line and click <em>Edit formula</em> to configure.</div>
       </div>
 
       <div class="card">
@@ -79,14 +86,11 @@
               <tr>
                 <th>Description</th>
                 <th>Base price</th>
-                <th>Base date (YYYY-MM)</th>
-                <th>Index</th>
-                <th>Target date (YYYY-MM)</th>
-                <th>Index base</th>
-                <th>Index target</th>
+                <th>Template</th>
                 <th>Indexed price</th>
                 <th>Δ abs</th>
                 <th>Δ %</th>
+                <th>Status</th>
                 <th></th>
               </tr>
             </thead>

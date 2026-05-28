@@ -296,9 +296,15 @@ const state = {
     {
       desc: "Sample contract",
       basePrice: 1000,
-      baseDate: "",
-      indexId: "hicp",
-      targetDate: "",
+      template: "simple",
+      alpha: 100,
+      capEnabled: false,
+      cap: 5,
+      floorEnabled: false,
+      floor: 0,
+      mode: "cumulative",
+      components: [{ indexId: "hicp", weight: 100, baseDate: "", targetDate: "" }],
+      expanded: true,
     },
   ]),
   supplierRows: load("supplierRows", []),
@@ -309,6 +315,31 @@ const state = {
     threshold: 2,
   }),
 };
+
+// Migrate legacy single-index calc rows to the multi-component formula model.
+state.calcRows = (state.calcRows || []).map((row) => {
+  if (Array.isArray(row.components)) return row;
+  return {
+    desc: row.desc || "",
+    basePrice: row.basePrice ?? null,
+    template: "simple",
+    alpha: 100,
+    capEnabled: false,
+    cap: 5,
+    floorEnabled: false,
+    floor: 0,
+    mode: "cumulative",
+    components: [
+      {
+        indexId: row.indexId || state.datasets[0]?.id || "",
+        weight: 100,
+        baseDate: row.baseDate || "",
+        targetDate: row.targetDate || "",
+      },
+    ],
+    expanded: false,
+  };
+});
 
 function load(key, fallback) {
   try {
@@ -644,35 +675,345 @@ function renderChangeTag(label, pct) {
 // Rendering: Calculator
 // ============================================================
 
+const CALC_TEMPLATES = {
+  simple: { label: "Simple ratio", multi: false, partial: false },
+  weighted: { label: "Weighted basket", multi: true, partial: false },
+  partial: { label: "Partial pass-through", multi: true, partial: true },
+  capped: { label: "Capped indexation", multi: true, partial: true, forceCap: true },
+};
+
+function shortName(comp) {
+  const lbl = comp.label || comp.indexId || "Idx";
+  const m = lbl.match(/[A-Z]{2,}/);
+  return m ? m[0] : (lbl.split(/[\s–-]/)[0] || "Idx");
+}
+
+function periodToYearFraction(p) {
+  const norm = normalizeUserPeriod(p);
+  if (!norm) return null;
+  const m = norm.match(/^(\d{4})(?:([MQS])(\d{1,2}))?$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const t = m[2];
+  const n = Number(m[3] || 1);
+  if (t === "M") return y + (n - 1) / 12;
+  if (t === "Q") return y + ((n - 1) * 3) / 12;
+  if (t === "S") return y + ((n - 1) * 6) / 12;
+  return y;
+}
+
+function computeYears(comp) {
+  if (!comp) return 0;
+  const a = periodToYearFraction(comp.baseDate);
+  const b = periodToYearFraction(comp.targetDate);
+  if (a == null || b == null) return 0;
+  return Math.max(0, b - a);
+}
+
+function computeCalcRow(row) {
+  const tpl = CALC_TEMPLATES[row.template] || CALC_TEMPLATES.simple;
+  const comps = (row.components || []).map((c) => {
+    const ds = state.datasets.find((d) => d.id === c.indexId);
+    const series = ds ? state.series[c.indexId] || [] : [];
+    const base = findIndexValue(series, c.baseDate);
+    const target = findIndexValue(series, c.targetDate);
+    const baseIdx = base?.value ?? null;
+    const targetIdx = target?.value ?? null;
+    const ratio = baseIdx != null && targetIdx != null && baseIdx !== 0 ? targetIdx / baseIdx : null;
+    return {
+      ...c,
+      label: ds ? ds.label : c.indexId,
+      code: ds ? ds.code : "",
+      baseIdx,
+      targetIdx,
+      ratio,
+      available: ratio != null,
+    };
+  });
+
+  const used = tpl.multi ? comps : comps.slice(0, 1);
+  const weightSum = tpl.multi ? used.reduce((s, c) => s + (Number(c.weight) || 0), 0) : 100;
+  const weightValid = !tpl.multi || Math.abs(weightSum - 100) < 0.05;
+  const missing = used.length === 0 || used.some((c) => !c.available);
+
+  let baseFactor = null;
+  if (!missing) {
+    if (row.template === "simple") {
+      baseFactor = used[0].ratio;
+    } else if (row.template === "weighted") {
+      baseFactor = used.reduce((s, c) => s + (Number(c.weight) / 100) * c.ratio, 0);
+    } else {
+      const basketRel = used.reduce((s, c) => s + (Number(c.weight) / 100) * (c.ratio - 1), 0);
+      const alpha = (Number(row.alpha) || 0) / 100;
+      baseFactor = 1 + alpha * basketRel;
+    }
+  }
+
+  const years = computeYears(used[0]);
+  let factor = baseFactor;
+  let capped = false;
+  let floored = false;
+  if (factor != null) {
+    let change = factor - 1;
+    if (row.capEnabled && row.cap != null) {
+      const lim = row.mode === "annual" && years > 0 ? Math.pow(1 + row.cap / 100, years) - 1 : row.cap / 100;
+      if (change > lim) { change = lim; capped = true; }
+    }
+    if (row.floorEnabled && row.floor != null) {
+      const lim = row.mode === "annual" && years > 0 ? Math.pow(1 + row.floor / 100, years) - 1 : row.floor / 100;
+      if (change < lim) { change = lim; floored = true; }
+    }
+    factor = 1 + change;
+  }
+
+  let newPrice = null, absChange = null, pctChange = null;
+  if (factor != null && row.basePrice != null) {
+    newPrice = row.basePrice * factor;
+    absChange = newPrice - row.basePrice;
+    pctChange = (factor - 1) * 100;
+  }
+
+  return { comps, used, weightSum, weightValid, missing, baseFactor, factor, capped, floored, years, newPrice, absChange, pctChange };
+}
+
+function buildFormula(row, calc, withValues) {
+  const used = calc.used;
+  let core;
+  if (row.template === "simple") {
+    const c = used[0];
+    core = withValues && c && c.available
+      ? `(${formatNumber(c.targetIdx)} / ${formatNumber(c.baseIdx)})`
+      : `(Index_t / Index_0)`;
+  } else if (row.template === "weighted") {
+    const parts = used.map((c) => {
+      const w = (Number(c.weight) || 0) / 100;
+      return withValues && c.available
+        ? `${w} × ${formatNumber(c.targetIdx)}/${formatNumber(c.baseIdx)}`
+        : `${w} × ${shortName(c)}_t/${shortName(c)}_0`;
+    });
+    core = `(${parts.join("  +  ")})`;
+  } else {
+    const alpha = (Number(row.alpha) || 0) / 100;
+    let basket;
+    if (used.length > 1) {
+      basket = "(" + used.map((c) => {
+        const w = (Number(c.weight) || 0) / 100;
+        return `${w}×Δ${shortName(c)}/${shortName(c)}_0`;
+      }).join(" + ") + ")";
+    } else {
+      basket = `(Index_t − Index_0)/Index_0`;
+    }
+    core = `(1 + ${alpha} × ${basket})`;
+  }
+  let s = `Price_new = Price_base × ${core}`;
+  if (row.capEnabled) s += `   ▸ cap +${row.cap}%${row.mode === "annual" ? "/yr" : ""}`;
+  if (row.floorEnabled) s += `   ▸ floor ${Number(row.floor) >= 0 ? "+" : ""}${row.floor}%${row.mode === "annual" ? "/yr" : ""}`;
+  return s;
+}
+
+function calcStatus(row, calc) {
+  if (calc.missing) return { cls: "yellow", label: "Index value not available" };
+  if (!calc.weightValid) return { cls: "red", label: `Weights = ${formatNumber(calc.weightSum)}% (must be 100%)` };
+  if (calc.capped) return { cls: "green", label: "OK (capped)" };
+  if (calc.floored) return { cls: "green", label: "OK (floored)" };
+  return { cls: "green", label: "OK" };
+}
+
 function renderCalculator() {
   const tbody = document.querySelector("#calcTable tbody");
   tbody.innerHTML = "";
+
   state.calcRows.forEach((row, i) => {
-    const tr = document.createElement("tr");
-    const dsOptions = state.datasets
-      .map((d) => `<option value="${d.id}" ${d.id === row.indexId ? "selected" : ""}>${escapeHtml(d.label)}</option>`)
+    const tpl = CALC_TEMPLATES[row.template] || CALC_TEMPLATES.simple;
+    const calc = computeCalcRow(row);
+    const status = calcStatus(row, calc);
+
+    const tplOptions = Object.entries(CALC_TEMPLATES)
+      .map(([k, t]) => `<option value="${k}" ${k === row.template ? "selected" : ""}>${t.label}</option>`)
       .join("");
 
-    const calc = computeCalcRow(row);
+    const tr = document.createElement("tr");
+    tr.className = "calc-main-row";
     tr.innerHTML = `
       <td><input data-i="${i}" data-k="desc" value="${escapeAttr(row.desc || "")}" /></td>
       <td><input data-i="${i}" data-k="basePrice" type="number" step="0.01" value="${row.basePrice ?? ""}" /></td>
-      <td><input data-i="${i}" data-k="baseDate" placeholder="2023-01" value="${escapeAttr(row.baseDate || "")}" /></td>
-      <td><select data-i="${i}" data-k="indexId">${dsOptions}</select></td>
-      <td><input data-i="${i}" data-k="targetDate" placeholder="2024-01" value="${escapeAttr(row.targetDate || "")}" /></td>
-      <td class="num">${calc.baseIdx != null ? formatNumber(calc.baseIdx) : "—"}</td>
-      <td class="num">${calc.targetIdx != null ? formatNumber(calc.targetIdx) : "—"}</td>
+      <td><select data-i="${i}" data-k="template">${tplOptions}</select></td>
       <td class="num"><strong>${calc.newPrice != null ? formatNumber(calc.newPrice) : "—"}</strong></td>
       <td class="num">${calc.absChange != null ? formatNumber(calc.absChange) : "—"}</td>
       <td class="num">${renderChangeTag("", calc.pctChange)}</td>
-      <td><button class="btn btn-danger" data-del="${i}">✕</button></td>
+      <td><span class="status-tag ${status.cls}" title="${escapeAttr(status.label)}">${escapeHtml(status.label)}</span></td>
+      <td style="white-space:nowrap">
+        <button class="btn" data-edit="${i}">${row.expanded ? "Hide" : "Edit formula"}</button>
+        <button class="btn btn-danger" data-del="${i}">✕</button>
+      </td>
     `;
     tbody.appendChild(tr);
+
+    if (row.expanded) {
+      const editTr = document.createElement("tr");
+      editTr.className = "calc-edit-row";
+      editTr.innerHTML = `<td colspan="8">${renderCalcEditor(row, i, calc, tpl)}</td>`;
+      tbody.appendChild(editTr);
+    }
   });
 
-  tbody.querySelectorAll("input, select").forEach((el) => {
-    el.addEventListener("input", updateCalcModel);
-    el.addEventListener("change", () => { updateCalcModel({ target: el }); renderCalculator(); });
+  bindCalcEvents();
+  updateFormulaDisplay();
+}
+
+function renderCalcEditor(row, i, calc, tpl) {
+  const compRows = calc.comps
+    .map((c, ci) => {
+      const dsOptions = state.datasets
+        .map((d) => `<option value="${d.id}" ${d.id === c.indexId ? "selected" : ""}>${escapeHtml(d.label)}</option>`)
+        .join("");
+      const showWeight = tpl.multi;
+      const dim = !c.available ? ' class="num calc-missing"' : ' class="num"';
+      return `
+        <tr>
+          <td><select data-i="${i}" data-ci="${ci}" data-ck="indexId">${dsOptions}</select></td>
+          ${showWeight ? `<td><input data-i="${i}" data-ci="${ci}" data-ck="weight" type="number" step="1" value="${c.weight ?? ""}" style="max-width:80px" /></td>` : `<td class="muted-cell">100%</td>`}
+          <td><input data-i="${i}" data-ci="${ci}" data-ck="baseDate" placeholder="2023-01" value="${escapeAttr(c.baseDate || "")}" /></td>
+          <td><input data-i="${i}" data-ci="${ci}" data-ck="targetDate" placeholder="2024-01" value="${escapeAttr(c.targetDate || "")}" /></td>
+          <td${dim}>${c.baseIdx != null ? formatNumber(c.baseIdx) : "n/a"}</td>
+          <td${dim}>${c.targetIdx != null ? formatNumber(c.targetIdx) : "n/a"}</td>
+          <td class="num">${c.ratio != null ? c.ratio.toFixed(4) : "—"}</td>
+          <td>${tpl.multi && calc.comps.length > 1 ? `<button class="btn btn-danger" data-delcomp="${i}" data-ci="${ci}">✕</button>` : ""}</td>
+        </tr>`;
+    })
+    .join("");
+
+  const weightLine = tpl.multi
+    ? `<div class="weight-sum ${calc.weightValid ? "ok" : "bad"}">Weight sum: ${formatNumber(calc.weightSum)}%${calc.weightValid ? " ✓" : " — must equal 100%"}</div>`
+    : "";
+
+  const alphaCtl = tpl.partial
+    ? `<label class="calc-ctl">Pass-through α (%)
+         <input data-i="${i}" data-k="alpha" type="number" step="1" value="${row.alpha ?? ""}" />
+       </label>`
+    : "";
+
+  return `
+    <div class="calc-editor">
+      <div class="calc-controls">
+        <label class="calc-ctl">Indexation basis
+          <select data-i="${i}" data-k="mode">
+            <option value="cumulative" ${row.mode === "cumulative" ? "selected" : ""}>Cumulative (base→target)</option>
+            <option value="annual" ${row.mode === "annual" ? "selected" : ""}>Annual (per year)</option>
+          </select>
+        </label>
+        ${alphaCtl}
+        <label class="calc-ctl calc-check">
+          <input type="checkbox" data-i="${i}" data-k="capEnabled" ${row.capEnabled ? "checked" : ""} />
+          Cap (max %)
+          <input data-i="${i}" data-k="cap" type="number" step="0.5" value="${row.cap ?? ""}" ${row.capEnabled ? "" : "disabled"} />
+        </label>
+        <label class="calc-ctl calc-check">
+          <input type="checkbox" data-i="${i}" data-k="floorEnabled" ${row.floorEnabled ? "checked" : ""} />
+          Floor (min %)
+          <input data-i="${i}" data-k="floor" type="number" step="0.5" value="${row.floor ?? ""}" ${row.floorEnabled ? "" : "disabled"} />
+        </label>
+        ${calc.years > 0 ? `<span class="calc-years">Span: ${calc.years.toFixed(2)} yr</span>` : ""}
+      </div>
+
+      <table class="calc-comp-table">
+        <thead>
+          <tr>
+            <th>Index</th>
+            <th>Weight</th>
+            <th>Base date</th>
+            <th>Target date</th>
+            <th>Index base</th>
+            <th>Index target</th>
+            <th>Ratio</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>${compRows}</tbody>
+      </table>
+      ${weightLine}
+      <div class="calc-editor-actions">
+        ${tpl.multi ? `<button class="btn" data-addcomp="${i}">+ Add index</button>` : ""}
+      </div>
+      <div class="formula-preview">${escapeHtml(buildFormula(row, calc, false))}</div>
+    </div>`;
+}
+
+function updateFormulaDisplay() {
+  const idx = state.calcRows.findIndex((r) => r.expanded);
+  const row = state.calcRows[idx >= 0 ? idx : 0];
+  const labelEl = document.getElementById("formulaRowLabel");
+  const dispEl = document.getElementById("formulaDisplay");
+  if (!row) {
+    labelEl.textContent = "";
+    dispEl.textContent = "Add a line to begin.";
+    return;
+  }
+  const calc = computeCalcRow(row);
+  labelEl.textContent = row.desc ? `— ${row.desc}` : "";
+  const symbolic = buildFormula(row, calc, false);
+  const numeric = !calc.missing ? buildFormula(row, calc, true) : null;
+  dispEl.innerHTML =
+    `<div class="formula-symbolic">${escapeHtml(symbolic)}</div>` +
+    (numeric ? `<div class="formula-numeric">= ${escapeHtml(numeric.replace(/^Price_new = /, ""))}</div>` : "") +
+    (calc.newPrice != null
+      ? `<div class="formula-result">⇒ Indexed price = ${formatNumber(calc.newPrice)} (${calc.pctChange >= 0 ? "+" : ""}${calc.pctChange.toFixed(2)}%)</div>`
+      : `<div class="formula-result calc-missing">⇒ Index value not available for one or more dates</div>`);
+}
+
+function bindCalcEvents() {
+  const tbody = document.querySelector("#calcTable tbody");
+
+  // Row-level fields
+  tbody.querySelectorAll("[data-k]").forEach((el) => {
+    const handler = (rerender) => {
+      const i = Number(el.dataset.i);
+      const k = el.dataset.k;
+      let v;
+      if (el.type === "checkbox") v = el.checked;
+      else if (el.type === "number") v = el.value === "" ? null : Number(el.value);
+      else v = el.value;
+      const row = state.calcRows[i];
+      row[k] = v;
+      if (k === "template") {
+        const tpl = CALC_TEMPLATES[v];
+        if (tpl.forceCap && !row.capEnabled) row.capEnabled = true;
+        if (tpl.multi && row.components.length === 1 && (Number(row.components[0].weight) || 0) === 0) {
+          row.components[0].weight = 100;
+        }
+      }
+      save("calcRows", state.calcRows);
+      if (rerender) renderCalculator();
+      else updateFormulaDisplay();
+    };
+    el.addEventListener("input", () => handler(false));
+    const structural = ["template", "mode", "capEnabled", "floorEnabled"];
+    el.addEventListener("change", () => handler(structural.includes(el.dataset.k)));
+  });
+
+  // Component-level fields
+  tbody.querySelectorAll("[data-ck]").forEach((el) => {
+    const handler = (rerender) => {
+      const i = Number(el.dataset.i);
+      const ci = Number(el.dataset.ci);
+      const k = el.dataset.ck;
+      const v = el.type === "number" ? (el.value === "" ? null : Number(el.value)) : el.value;
+      state.calcRows[i].components[ci][k] = v;
+      save("calcRows", state.calcRows);
+      if (rerender) renderCalculator();
+      else updateFormulaDisplay();
+    };
+    el.addEventListener("input", () => handler(false));
+    el.addEventListener("change", () => handler(true));
+  });
+
+  tbody.querySelectorAll("button[data-edit]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const i = Number(b.dataset.edit);
+      state.calcRows[i].expanded = !state.calcRows[i].expanded;
+      save("calcRows", state.calcRows);
+      renderCalculator();
+    });
   });
   tbody.querySelectorAll("button[data-del]").forEach((b) => {
     b.addEventListener("click", () => {
@@ -681,33 +1022,30 @@ function renderCalculator() {
       renderCalculator();
     });
   });
-}
-
-function updateCalcModel(e) {
-  const i = Number(e.target.dataset.i);
-  const k = e.target.dataset.k;
-  const v = e.target.type === "number" ? (e.target.value === "" ? null : Number(e.target.value)) : e.target.value;
-  state.calcRows[i][k] = v;
-  save("calcRows", state.calcRows);
-}
-
-function computeCalcRow(row) {
-  const ds = state.datasets.find((d) => d.id === row.indexId);
-  if (!ds) return { baseIdx: null, targetIdx: null, newPrice: null, absChange: null, pctChange: null };
-  const series = state.series[ds.id] || [];
-  const base = findIndexValue(series, row.baseDate);
-  const target = findIndexValue(series, row.targetDate);
-  const baseIdx = base?.value ?? null;
-  const targetIdx = target?.value ?? null;
-  let newPrice = null,
-    absChange = null,
-    pctChange = null;
-  if (row.basePrice != null && baseIdx != null && targetIdx != null && baseIdx !== 0) {
-    newPrice = row.basePrice * (targetIdx / baseIdx);
-    absChange = newPrice - row.basePrice;
-    pctChange = (absChange / row.basePrice) * 100;
-  }
-  return { baseIdx, targetIdx, newPrice, absChange, pctChange };
+  tbody.querySelectorAll("button[data-addcomp]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const i = Number(b.dataset.addcomp);
+      const row = state.calcRows[i];
+      const sum = row.components.reduce((s, c) => s + (Number(c.weight) || 0), 0);
+      row.components.push({
+        indexId: state.datasets[0]?.id || "",
+        weight: Math.max(0, 100 - sum),
+        baseDate: row.components[0]?.baseDate || "",
+        targetDate: row.components[0]?.targetDate || "",
+      });
+      save("calcRows", state.calcRows);
+      renderCalculator();
+    });
+  });
+  tbody.querySelectorAll("button[data-delcomp]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const i = Number(b.dataset.delcomp);
+      const ci = Number(b.dataset.ci);
+      state.calcRows[i].components.splice(ci, 1);
+      save("calcRows", state.calcRows);
+      renderCalculator();
+    });
+  });
 }
 
 // ============================================================
@@ -1049,24 +1387,37 @@ function exportXlsx() {
 
   // Sheet 2 — Indexation calculations
   const calcRows = [[
-    "Description", "Base price", "Base date", "Index", "Target date",
-    "Index base", "Index target", "Indexed price", "Δ abs", "Δ %",
+    "Description", "Base price", "Template", "Mode", "Pass-through α%",
+    "Cap %", "Floor %", "Index", "Weight %", "Base date", "Target date",
+    "Index base", "Index target", "Ratio", "Indexed price", "Δ abs", "Δ %", "Formula",
   ]];
   for (const row of state.calcRows) {
     const c = computeCalcRow(row);
-    const ds = state.datasets.find((d) => d.id === row.indexId);
-    calcRows.push([
-      row.desc,
-      row.basePrice,
-      row.baseDate,
-      ds ? ds.label : row.indexId,
-      row.targetDate,
-      c.baseIdx,
-      c.targetIdx,
-      c.newPrice,
-      c.absChange,
-      c.pctChange,
-    ]);
+    const formula = buildFormula(row, c, true);
+    const comps = c.used.length ? c.used : [{}];
+    comps.forEach((comp, ci) => {
+      const first = ci === 0;
+      calcRows.push([
+        first ? row.desc : "",
+        first ? row.basePrice : "",
+        first ? (CALC_TEMPLATES[row.template]?.label || row.template) : "",
+        first ? row.mode : "",
+        first && CALC_TEMPLATES[row.template]?.partial ? row.alpha : "",
+        first && row.capEnabled ? row.cap : "",
+        first && row.floorEnabled ? row.floor : "",
+        comp.label ?? "",
+        comp.weight ?? "",
+        comp.baseDate ?? "",
+        comp.targetDate ?? "",
+        comp.baseIdx ?? "",
+        comp.targetIdx ?? "",
+        comp.ratio ?? "",
+        first ? c.newPrice : "",
+        first ? c.absChange : "",
+        first ? c.pctChange : "",
+        first ? formula : "",
+      ]);
+    });
   }
   const ws2 = XLSX.utils.aoa_to_sheet(calcRows);
   XLSX.utils.book_append_sheet(wb, ws2, "Calculations");
@@ -1187,12 +1538,19 @@ function init() {
   document.getElementById("historySelect").addEventListener("change", (e) => renderHistory(e.target.value));
 
   document.getElementById("addCalcRow").addEventListener("click", () => {
+    state.calcRows.forEach((r) => (r.expanded = false));
     state.calcRows.push({
       desc: "",
       basePrice: null,
-      baseDate: "",
-      indexId: state.datasets[0]?.id || "",
-      targetDate: "",
+      template: "simple",
+      alpha: 100,
+      capEnabled: false,
+      cap: 5,
+      floorEnabled: false,
+      floor: 0,
+      mode: "cumulative",
+      components: [{ indexId: state.datasets[0]?.id || "", weight: 100, baseDate: "", targetDate: "" }],
+      expanded: true,
     });
     save("calcRows", state.calcRows);
     renderCalculator();
